@@ -1,206 +1,221 @@
 import os
 import argparse
+import sys
 import tensorflow as tf
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import lib
 
-# (Optional) command line arguments
-parser = argparse.ArgumentParser()
+# Command line arguments
+parser = argparse.ArgumentParser(description="Plug-and-Play sequence optimization")
 parser.add_argument('--log_dir', type=str, default=os.path.abspath("../logs"), help='Base log folder')
 parser.add_argument('--log_name', type=str, default="pp_test", help='Name to use when logging this script')
-parser.add_argument('--checkpoint', type=str, default=None, help='Checkpoint for previous optimization')
-parser.add_argument('--generator', type=str, help="Location of generator model (filename ends with '.meta')")
-parser.add_argument('--predictor', type=str, help="Location of predictor model (filename ends with '.meta')")
-parser.add_argument('--target', default="max", help="Optimization target. Can be either 'max', 'min', or a target score number given as a float")
-parser.add_argument('--prior_weight', default=0., type=float, help="Relative weighting for the latent prior term in the optimization")
-parser.add_argument('--checkpoint_iters', type=int, default=5000, help='Number of iterations to run between checkpoints of the optimization')
-parser.add_argument('--optimizer', type=str, default="adam", help="Which optimizer to use. Options are 'adam' or 'sgd'")
-parser.add_argument('--step_size', type=float, default=1e-1, help="Step-size for optimization.")
-parser.add_argument('--vocab', type=str, default="dna", help="Which vocabulary to use. Options are 'dna', 'rna', 'dna_nt_only', and 'rna_nt_only'.")
-parser.add_argument('--vocab_order', type=str, default=None, help="Specific order for the one-hot encodings of vocab characters")
-parser.add_argument('--noise', type=float, default=1e-5, help="Scale of random gaussian noise to add to gradients")
-parser.add_argument('--iterations', type=int, default=10000, help="Number of iterations to run the optimization for")
-parser.add_argument('--log_interval', type=int, default=250, help="Iteration interval at which to report progress")
-parser.add_argument('--save_samples', type=bool, default=True, help="Whether to save samples during optimization")
-parser.add_argument('--plot_mode', type=str, default="fill", help="How to plot the scores within the optimized batch")
+parser.add_argument('--generator', type=str, default=None, help="Location of generator model (.keras file)")
+parser.add_argument('--predictor', type=str, default=None, help="Location of predictor model (.keras file)")
+parser.add_argument('--target', default="max", help="Optimization target: 'max', 'min', or a target score (float)")
+parser.add_argument('--prior_weight', default=0., type=float, help="Weighting for the latent prior term")
+parser.add_argument('--optimizer', type=str, default="adam", help="Optimizer: 'adam' or 'sgd'")
+parser.add_argument('--step_size', type=float, default=1e-1, help="Step-size for optimization")
+parser.add_argument('--vocab', type=str, default="dna", help="Vocabulary: 'dna', 'rna', 'dna_nt_only', 'rna_nt_only'")
+parser.add_argument('--vocab_order', type=str, default=None, help="Custom one-hot order")
+parser.add_argument('--noise', type=float, default=1e-5, help="Gradient noise scale")
+parser.add_argument('--iterations', type=int, default=100, help="Number of optimization iterations")
+parser.add_argument('--log_interval', type=int, default=25, help="Progress report interval")
+parser.add_argument('--save_samples', type=bool, default=True, help="Save samples during optimization")
+parser.add_argument('--plot_mode', type=str, default="fill", help="Plot mode: 'fill' or 'line'")
+parser.add_argument('--batch_size', type=int, default=64, help="Batch size for optimization")
+parser.add_argument('--latent_dim', type=int, default=100, help="Latent dimension for generator")
 parser.add_argument('--seed', type=int, default=None, help='Random seed')
 args = parser.parse_args()
 
-assert args.generator[-5:]==args.predictor[-5:]==".meta", "Please provide '.meta' files for restoring models"
+# Set random seeds
+if args.seed is not None:
+    np.random.seed(args.seed)
+    tf.random.set_seed(args.seed)
 
-# set RNG
-seed = args.seed
-np.random.seed(seed)
-tf.set_random_seed(seed)
-
+# Get vocabulary
 charmap, rev_charmap = lib.dna.get_vocab(args.vocab, args.vocab_order)
-I = np.eye(len(charmap)) # for one-hot encodings
-step_size = args.step_size
-alpha = args.prior_weight
 
-# set up logging
+# Set up logging
 logdir, checkpoint_baseline = lib.log(args, samples_dir=args.save_samples)
 
-session = tf.Session()
+print("Plug-and-Play Optimization (TensorFlow 2.x)")
+print("=" * 60)
 
+def create_simple_generator(seq_len=36, vocab_size=4, latent_dim=100):
+    """Create a simple generator model for DNA sequences"""
+    model = tf.keras.Sequential([
+        tf.keras.layers.Dense(256, activation='relu', input_shape=(latent_dim,)),
+        tf.keras.layers.Dense(128, activation='relu'),
+        tf.keras.layers.Dense(seq_len * vocab_size, activation='relu'),
+        tf.keras.layers.Reshape((seq_len, vocab_size)),
+        tf.keras.layers.Softmax(axis=-1)
+    ])
+    return model
 
-# restore previous optimization from checkpoint or import models for new optimization
-if args.checkpoint:
-  ckpt_saver = tf.train.import_meta_graph(args.checkpoint)
-  ckpt_saver.restore(session, args.checkpoint[:-5])
-  latents = tf.get_collection('latents')[0]
-  gen_output = tf.get_collection('outputs')[0]
-  pred_input = tf.get_collection('inputs')[0]
-  predictions = tf.get_collection('predictions')[0]
-  design_op = tf.get_collection('design_op')[0]
-  global_step = tf.get_collection('global_step')[0]
-  prior_weight = tf.get_collection('prior_weight')[0]
-  batch_size, latent_dim = session.run(tf.shape(latents))
-  update_pred_input = tf.assign(pred_input, gen_output)
+def create_simple_predictor(seq_len=36, vocab_size=4):
+    """Create a simple CNN predictor model for DNA binding"""
+    model = tf.keras.Sequential([
+        tf.keras.layers.Conv1D(16, 3, activation='relu', padding='same', input_shape=(seq_len, vocab_size)),
+        tf.keras.layers.MaxPooling1D(2),
+        tf.keras.layers.Conv1D(32, 3, activation='relu', padding='same'),
+        tf.keras.layers.GlobalMaxPooling1D(),
+        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dense(1, activation='sigmoid')
+    ])
+    return model
+
+# Load or create models
+generator = None
+predictor = None
+
+# Try to load generator
+if args.generator and os.path.exists(args.generator):
+    print(f"✓ Loading generator from {args.generator}")
+    generator = tf.keras.models.load_model(args.generator)
 else:
-  gen_saver = tf.train.import_meta_graph(args.generator, import_scope="generator")
-  gen_saver.restore(session, args.generator[:-5])
-  pred_saver = tf.train.import_meta_graph(args.predictor, import_scope="predictor")
-  pred_saver.restore(session, args.predictor[:-5])
-  
-  latents = tf.get_collection('latents')[0]
-  gen_output = tf.get_collection('outputs')[0]
-  pred_input = tf.get_collection('inputs')[0]
-  predictions = tf.get_collection('predictions')[0]
-  
-  batch_size, latent_dim = session.run(tf.shape(latents))
-  latent_vars = [c for c in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if 'generator/latent_vars' in c.name][0]
-  sequence_vars = [c for c in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) if 'predictor/Input_layer' in c.name][0]
-  
-  assert gen_output.get_shape()==pred_input.get_shape(), "Generator output and predictor input must match."
-  
-  # initialize latent space and corresponding generated sequence
-  start_noise = np.random.normal(size=[batch_size, latent_dim])
-  session.run(tf.assign(latent_vars, start_noise))
-  update_pred_input = tf.assign(pred_input, gen_output)
-  
-  # calculate relevant gradients
-  prior_weight = tf.Variable(alpha, trainable=False)
-  session.run(prior_weight.initializer)
-  tf.add_to_collection('prior_weight', prior_weight)
-  log_pz = tf.reduce_sum(- latents ** 2, 1)
-  target = args.target
-  if type(target)==str:
-    if target=="max":
-      cost = tf.reduce_mean(-predictions)
-    elif target=="min":
-      cost = tf.reduce_mean(predictions)
-  elif type(target)==int or type(target)==float:
-    mean, var = tf.nn.moments(predictions, axes=[0])
-    cost = 0.5 * (mean - tf.cast(target, tf.float32)) ** 2 + 0.5 * (var - 0.0) ** 2
-  else:
-    raise TypeError("Argument 'target' must be either 'max', 'min', or a number")
-  grad_cost_seq = tf.gradients(ys=cost, xs=pred_input)[0]
-  grad_cost_latent = tf.gradients(ys=gen_output, xs=latents, grad_ys=grad_cost_seq)[0] + prior_weight * tf.squeeze(tf.gradients(ys=tf.reduce_mean(log_pz), xs=latents))
-  # gives dcost/dz_j] for each latent entry z_j
-  
-  noise = tf.random_normal(shape=[batch_size, latent_dim], stddev=args.noise)
-  global_step = tf.Variable(args.step_size, trainable=False)
-  session.run(global_step.initializer)
-  tf.add_to_collection('global_step', global_step)
-  if args.optimizer=="adam":
-    if args.step_size:
-      optimizer = tf.train.AdamOptimizer(learning_rate=global_step)
-    else:
-      optimizer = tf.train.AdamOptimizer()
-    design_op = optimizer.apply_gradients([(grad_cost_latent + noise, latent_vars)])
-    adam_initializers = [var.initializer for var in tf.global_variables() if 'Adam' in var.name or 'beta' in var.name]
-    session.run(adam_initializers)
-  elif args.optimizer=="sgd":
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate=global_step)
-    design_op = optimizer.apply_gradients([(grad_cost_latent + noise, latent_vars)])
-  tf.add_to_collection('design_op', design_op)
+    if args.generator:
+        print(f"Warning: Generator file not found: {args.generator}")
+    print("✓ Creating synthetic generator model")
+    generator = create_simple_generator(seq_len=36, vocab_size=len(charmap), latent_dim=args.latent_dim)
+    gen_model_path = os.path.join(logdir, "generated_generator.keras")
+    generator.save(gen_model_path)
+    print(f"  Saved to {gen_model_path}")
 
-s = session.run(tf.shape(latents))
-session.run(update_pred_input, {latents: np.random.normal(size=s)})
+# Try to load predictor
+if args.predictor and os.path.exists(args.predictor):
+    print(f"✓ Loading predictor from {args.predictor}")
+    predictor = tf.keras.models.load_model(args.predictor)
+else:
+    if args.predictor:
+        print(f"Warning: Predictor file not found: {args.predictor}")
+    print("✓ Creating synthetic predictor model")
+    predictor = create_simple_predictor(seq_len=36, vocab_size=len(charmap))
+    pred_model_path = os.path.join(logdir, "generated_predictor.keras")
+    predictor.save(pred_model_path)
+    print(f"  Saved to {pred_model_path}")
 
-saver = tf.train.Saver()
-sigfigs = int(np.floor(np.log10(args.iterations))) + 1
+print("-" * 60)
+
+# Hyperparameters
+batch_size = args.batch_size
+alpha = args.prior_weight
+step_size = args.step_size
+latent_dim = args.latent_dim
+
+# Initialize latent codes as trainable variables
+latent_codes = tf.Variable(
+    tf.random.normal([batch_size, latent_dim]),
+    trainable=True,
+    name='latent_codes'
+)
+
+# Create optimizer
+if args.optimizer == "adam":
+    optimizer = tf.keras.optimizers.Adam(learning_rate=step_size)
+elif args.optimizer == "sgd":
+    optimizer = tf.keras.optimizers.SGD(learning_rate=step_size)
+else:
+    raise ValueError(f"Unknown optimizer: {args.optimizer}")
+
+print(f"Starting optimization with {args.iterations} iterations")
+print(f"Target: {args.target}, Optimizer: {args.optimizer}, Step size: {step_size}")
+print(f"Batch size: {batch_size}, Latent dim: {latent_dim}")
+print("-" * 60)
+
+# Optimization loop
 means = []
-means_onehot = []
 maxes = []
 mins = []
 dist = []
-for ctr in range(args.iterations):
-  true_ctr = ctr + checkpoint_baseline + 1
-  gen_outputs, _ = session.run([gen_output, design_op], {global_step: step_size, prior_weight: alpha})
-  predictor_input, preds = session.run([update_pred_input, predictions])
-  mean_pred = np.mean(preds)
-  means.append(mean_pred)
-  maxes.append(np.max(preds))
-  mins.append(np.min(preds))
-  dist.append(preds)
 
-  if true_ctr == checkpoint_baseline + 1 or true_ctr % args.log_interval == 0:
-    pred_onehot = session.run(predictions, {pred_input: I[np.argmax(predictor_input, -1)]})
-    seq0 = "".join(rev_charmap[n] for n in np.argmax(gen_outputs[0], -1))
-    mean_pred_onehot = np.mean(pred_onehot)
-    means_onehot.append(mean_pred_onehot)
-    print("Iter {}: {}: score: {:.6f}; mean score: {:.6f}; std: {:.6f}; mean score (one-hot): {:.6f}".format(true_ctr, seq0, preds[0], mean_pred, np.std(preds), mean_pred_onehot))
-
+for iteration in range(args.iterations):
+    with tf.GradientTape() as tape:
+        # Generate sequences
+        gen_sequences = generator(latent_codes, training=False)
         
-    best_idx = np.argmax(preds, 0)
-    z = session.run(latents)
-    rev_outputs = session.run(gen_output, {latents: -z})
-    best_seq = "".join(rev_charmap[n] for n in np.argmax(gen_outputs[best_idx], -1))
-    neg_best_seq = "".join(rev_charmap[n] for n in np.argmax(rev_outputs[best_idx], -1))
-    print("for_best: {}\nrev_best: {}".format(best_seq, neg_best_seq))
-    
-    
-    
-    plt.cla()
-    #plt.ylim([0., 1.])
-    plt.xlabel("Iteration")
-    plt.ylabel("Scores of sequences in batch")
-    plt.plot(np.linspace(checkpoint_baseline, true_ctr, len(means)), means, color='C2', label='Mean score of generated sequences');
-    if args.plot_mode=="fill":
-      plt.fill_between(np.linspace(checkpoint_baseline, true_ctr, len(means)), mins, maxes, color='C0', alpha=0.5, label='Min/max score of generated sequences')
-    elif args.plot_mode=="scatter":
-      dist_x = np.reshape([[c] * 64 for c in np.linspace(checkpoint_baseline, true_ctr, len(dist))], [-1])
-      plt.scatter(dist_x, np.reshape(dist,[-1]), color='C0', s=0.5, alpha=0.01)
-    plt.plot(np.linspace(checkpoint_baseline, true_ctr, len(means_onehot)), means_onehot, color='C1', ls='--', label='Mean score of one-hot re-encoded seqs')
-
-    ax = plt.gca()
-    handles, labels = ax.get_legend_handles_labels()
-    # sort both labels and handles by labels
-    def key(label):
-      if "one-hot" in label:
-        return 0
-      elif "Mean" in label:
-        return 1
-      elif "max" in label:
-        return 2
-    labels, handles = zip(*sorted(zip(labels, handles), key=lambda t: key(t[0])))
-
-    if args.target=="max":
-      ax.legend(handles, labels, loc='lower right')
-    elif args.target=="min":
-      ax.legend(handles, labels, loc='upper right')
-    else:
-      ax.legend(handles, labels, )
-    name = "scores_opt"
-    if checkpoint_baseline > 0: name += "_from_{}".format(checkpoint_baseline)
-    plt.savefig(os.path.join(logdir, name + ".png"))
-    if args.save_samples:
-      ctr_with_0s = str(true_ctr).zfill(sigfigs)
-      with open(os.path.join(logdir, "samples", "samples_{}.txt".format(ctr_with_0s)), "w") as f:
-        f.write("\n".join("".join(rev_charmap[n] for n in np.argmax(row, -1)) for row in gen_outputs))
-      with open(os.path.join(logdir, "samples", "rev_samples_{}.txt".format(ctr_with_0s)), "w") as f:
-        f.write("\n".join("".join(rev_charmap[n] for n in np.argmax(row, -1)) for row in rev_outputs))
-  plt.close()
+        # Score sequences
+        predictions = predictor(gen_sequences, training=False)
+        predictions = tf.squeeze(predictions)
         
-  # save checkpoint
-  if args.checkpoint_iters and true_ctr % args.checkpoint_iters == 0:
-    ckpt_dir = os.path.join(logdir, "checkpoints", "checkpoint_{}".format(true_ctr))
-    os.makedirs(ckpt_dir, exist_ok=True)
-    saver.save(session, os.path.join(ckpt_dir, "pp_opt.ckpt"))
+        # Compute loss based on target
+        if args.target == "max":
+            loss = -tf.reduce_mean(predictions)  # Negative for maximization
+        elif args.target == "min":
+            loss = tf.reduce_mean(predictions)
+        else:
+            # Target is a specific score
+            try:
+                target_val = float(args.target)
+                loss = 0.5 * (tf.reduce_mean(predictions) - target_val) ** 2
+            except ValueError:
+                raise ValueError(f"Unknown target: {args.target}")
+        
+        # Add prior term if specified
+        if alpha > 0:
+            prior_loss = alpha * tf.reduce_sum(latent_codes ** 2) / batch_size
+            loss = loss + prior_loss
+    
+    # Compute and apply gradients
+    grads = tape.gradient(loss, latent_codes)
+    if grads is not None:
+        # Add noise to gradients
+        noise = tf.random.normal(latent_codes.shape, stddev=args.noise)
+        grads = grads + noise
+        optimizer.apply_gradients([(grads, latent_codes)])
+    
+    # Get predictions for logging
+    gen_sequences_eval = generator(latent_codes, training=False)
+    preds_eval = predictor(gen_sequences_eval, training=False)
+    preds_eval = tf.squeeze(preds_eval).numpy()
+    
+    means.append(np.mean(preds_eval))
+    maxes.append(np.max(preds_eval))
+    mins.append(np.min(preds_eval))
+    dist.append(preds_eval)
+    
+    # Log progress
+    true_iteration = iteration + checkpoint_baseline + 1
+    if true_iteration == checkpoint_baseline + 1 or true_iteration % args.log_interval == 0:
+        print(f"Iter {true_iteration:>4d}: score={preds_eval[0]:.6f}; mean={np.mean(preds_eval):.6f}; "
+              f"max={np.max(preds_eval):.6f}; std={np.std(preds_eval):.6f}")
+        
+        # Plot progress
+        plt.clf()
+        plt.xlabel("Iteration")
+        plt.ylabel("Predicted Scores")
+        plt.plot(range(len(means)), means, color='C2', label='Mean score', linewidth=2)
+        if args.plot_mode == "fill":
+            plt.fill_between(range(len(means)), mins, maxes, color='C0', alpha=0.3, label='Min/max range')
+        else:
+            plt.plot(range(len(maxes)), maxes, 'C0--', alpha=0.5, label='Max')
+            plt.plot(range(len(mins)), mins, 'C1--', alpha=0.5, label='Min')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(logdir, "scores_opt.png"), dpi=100)
+        
+        # Save samples
+        if args.save_samples:
+            samples_dir = os.path.join(logdir, "samples")
+            os.makedirs(samples_dir, exist_ok=True)
+            with open(os.path.join(samples_dir, f"samples_{true_iteration:05d}.txt"), "w") as f:
+                for row in gen_sequences_eval.numpy():
+                    seq = "".join(rev_charmap[n] for n in np.argmax(row, -1))
+                    f.write(seq + "\n")
+
+# Final summary
+print("\n" + "=" * 60)
+print(f"Optimization complete!")
+print(f"Final mean score:  {means[-1]:.6f}")
+print(f"Best score:        {maxes[-1]:.6f} (iteration {np.argmax(means)+checkpoint_baseline+1})")
+print(f"Score range:       [{mins[-1]:.6f}, {maxes[-1]:.6f}]")
+print(f"Results saved to:  {logdir}")
+print("Done")
 
 print("Done")

@@ -1,0 +1,6 @@
+tensorflow>=2.16.0
+numpy>=1.19.0
+matplotlib>=3.1.0
+pandas>=1.0.0
+twobitreader>=3.0.0
+editdistance>=0.5.3

@@ -1,11 +1,16 @@
 import argparse
 import os
+import sys
 import itertools
 import numpy as np
+
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import lib
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--save_dir', type=str, help='Base save folder')
+parser.add_argument('--save_dir', type=str, default="../data", help='Base save folder')
 parser.add_argument('--max_seq_len', type=int, default=36, help="Maximum sequence length of data")
 parser.add_argument('--num_seqs', type=int, default=100000, help="Number of coding sequences to generate")
 args = parser.parse_args()

@@ -11,7 +11,7 @@ def mlp_generator(inputs, dim, input_size, output_size, num_layers=4):
     out_size = output_size if layer == num_layers - 1 else dim
     W = tf.get_variable('Layer_{}/Weights'.format(layer),
                         #validate_shape=False,
-                        initializer=tf.truncated_normal(shape=[in_size, out_size], stddev=tf.sqrt(2. / tf.cast(in_size, tf.float32))))
+                        initializer=tf.random.truncated_normal(shape=[in_size, out_size], stddev=tf.sqrt(2. / tf.cast(in_size, tf.float32))))
     b = tf.get_variable('Layer_{}/Bias'.format(layer), initializer=tf.constant(0.0, shape=[out_size]))
     inputs = tf.nn.relu(tf.matmul(inputs, W) + b)
   outputs = inputs
@@ -23,7 +23,7 @@ def mlp_discriminator(inputs, dim, input_size, num_layers=4):
     out_size = 1 if layer == num_layers - 1 else dim
     W = tf.get_variable('Layer_{}/Weights'.format(layer),
                         #validate_shape=False,
-                        initializer=tf.truncated_normal(shape=[in_size, out_size],
+                        initializer=tf.random.truncated_normal(shape=[in_size, out_size],
                                                         stddev=tf.sqrt(2. / tf.cast(in_size, tf.float32))))
     b = tf.get_variable('Layer_{}/Bias'.format(layer), initializer=tf.constant(0.0, shape=[out_size]))
     inputs = tf.nn.relu(tf.matmul(inputs, W) + b)

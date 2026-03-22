@@ -1,0 +1,26 @@
+Values at iteration 0
+annotate: False
+batch_size: 64
+checkpoint: None
+checkpoint_iters: 250
+data_loc: /home/nkilloran/datasets/leo_binding_data/Max
+data_start: 0
+disc_dim: 100
+disc_iters: 5
+disc_layers: 5
+gen_dim: 100
+gen_layers: 5
+generic: True
+latent_dim: 100
+learning_rate: 0.0001
+lmbda: 10.0
+log_dir: codespaces-1d846b:/workspaces/Generating-and-designing-DNA-Sawan/logs/gan_test/2026.03.22-05h26m36s_codespaces-1d846b
+log_name: gan_test
+max_seq_len: 36
+model_type: mlp
+seed: None
+train_iters: 100
+validate: True
+vocab: dna
+vocab_order: None
+charmap: 'A':0, 'C':1, 'G':2, 'T':3, '*':4

@@ -1,0 +1,20 @@
+Values at iteration 0
+batch_size: 64
+checkpoint: None
+checkpoint_iters: 100
+data_loc: /home/nkilloran/datasets/leo_binding_data/Max/sim_ground_truth
+data_start: 0
+filter_size: 15
+final_activation: sigmoid
+hidden_size: 200
+learning_rate: 5e-05
+log_dir: codespaces-1d846b:/workspaces/Generating-and-designing-DNA-Sawan/logs/predictor/2026.03.22-05h22m43s_codespaces-1d846b
+log_name: predictor
+max_seq_len: 36
+num_epochs: 75
+num_filters: 100
+num_layers: 2
+seed: 0
+vocab: dna
+vocab_order: None
+charmap: 'A':0, 'C':1, 'G':2, 'T':3, '*':4
